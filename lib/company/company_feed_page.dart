@@ -33,13 +33,22 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
             .select()
             .eq('empresa_id', user.id)
             .order('created_at', ascending: false);
-        setState(() => _myJobs = List<Map<String, dynamic>>.from(response));
+        //setState(() => _myJobs = List<Map<String, dynamic>>.from(response));
+        if (mounted) {
+          setState(() {
+            _myJobs = List<Map<String, dynamic>>.from(response);
+            _isLoading = false;
+          });
+        }
+      } else {
+        if (mounted) setState(() => _isLoading = false);
       }
     } catch (e) {
       debugPrint('Erro: $e');
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
+      if (mounted) setState(() => _isLoading = false);//
+    } //finally {
+    //if (mounted) setState(() => _isLoading = false);
+    //}
   }
 
   Future<void> _excluirVagaCompleta(String jobId) async {
@@ -47,47 +56,50 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Excluir Vaga?'),
-        content: const Text('Isso removerá a vaga e todos os inscritos nela. Esta ação não pode ser desfeita.'),
+        content: const Text(
+            'Isso removerá a vaga e todos os inscritos nela. Esta ação não pode ser desfeita.'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('CANCELAR')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('EXCLUIR', style: TextStyle(color: Colors.red))),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('CANCELAR')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child:
+                  const Text('EXCLUIR', style: TextStyle(color: Colors.red))),
         ],
       ),
     );
 
     if (confirmar == true) {
       try {
-      //BUG-001(FIXED)- ERRO AO EXCLUIR A VAGA NO MODAL EMPRESA 21*02*2026
-      //Realiza a exclusão dos aplicantes antes de excluir a vaga - wLucena
+        setState(() => _isLoading = true);
 
-      setState(() => _isLoading = true); // Mostra loading enquanto exclui
+        // Excluir candidaturas
+        await _supabase.from('job_applications').delete().eq('job_id', jobId);
 
-      await _supabase.from('job_applications')
-                     .delete()
-                     .eq('id', jobId);
-      //Realiza a exclusão da vaga - wLucena 
-      await _supabase.from('jobs')
-                     .delete()
-                     .eq('id', jobId);
+        // Excluir vaga
+        await _supabase.from('jobs').delete().eq('id', jobId);
 
-      await _loadCompanyJobs();
-      
-        if(mounted){
+        // ✅ REMOVER DIRETAMENTE DA LISTA (mais garantido)
+        if (mounted) {
+          setState(() {
+            _myJobs.removeWhere((job) => job['id'] == jobId);
+            _isLoading = false;
+          });
+
           ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Vaga excluída com sucesso!')),
-        );
-        };
-        
+            const SnackBar(content: Text('Vaga excluída com sucesso!')),
+          );
+        }
       } catch (e) {
         debugPrint('Erro ao excluir: $e');
         if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Erro ao excluir vaga: $e')),
-        );
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Erro ao excluir vaga: $e')),
+          );
+          setState(() => _isLoading = false);
         }
-        setState(() => _isLoading = false);
       }
-       
     }
   }
 
@@ -95,7 +107,8 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (context) => DraggableScrollableSheet(
         initialChildSize: 0.7,
         expand: false,
@@ -103,16 +116,22 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
           padding: const EdgeInsets.all(20),
           child: Column(
             children: [
-              const Text('Colaboradores Confirmados', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const Text('Colaboradores Confirmados',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               const Divider(),
               Expanded(
                 child: FutureBuilder(
                   // O .select('..., users(*)') é o que resolve o "Desconhecido"
-                  future: _supabase.from('job_applications').select('id, users(*)').eq('job_id', jobId),
+                  future: _supabase
+                      .from('job_applications')
+                      .select('id, users(*)')
+                      .eq('job_id', jobId),
                   builder: (context, AsyncSnapshot snapshot) {
-                    if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+                    if (!snapshot.hasData)
+                      return const Center(child: CircularProgressIndicator());
                     final data = snapshot.data as List;
-                    if (data.isEmpty) return const Center(child: Text('Nenhum inscrito.'));
+                    if (data.isEmpty)
+                      return const Center(child: Text('Nenhum inscrito.'));
 
                     return ListView.builder(
                       controller: controller,
@@ -123,13 +142,19 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
                         final nome = worker?['nome'] ?? 'Desconhecido';
 
                         return ListTile(
-                          leading: CircleAvatar(child: Text(nome[0].toUpperCase())),
+                          leading:
+                              CircleAvatar(child: Text(nome[0].toUpperCase())),
                           title: Text(nome),
-                          subtitle: Text('Rank: ${worker?['rank'] ?? 'Bronze'}'),
+                          subtitle:
+                              Text('Rank: ${worker?['rank'] ?? 'Bronze'}'),
                           trailing: IconButton(
-                            icon: const Icon(Icons.person_remove, color: Colors.red),
+                            icon: const Icon(Icons.person_remove,
+                                color: Colors.red),
                             onPressed: () async {
-                              await _supabase.from('job_applications').delete().eq('id', application['id']);
+                              await _supabase
+                                  .from('job_applications')
+                                  .delete()
+                                  .eq('id', application['id']);
                               Navigator.pop(context); // Fecha modal
                               _loadCompanyJobs(); // Atualiza contador 0/x
                             },
@@ -153,20 +178,27 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
       appBar: AppBar(
         title: const Text('Painel da Empresa'),
         actions: [
-          IconButton(icon: const Icon(Icons.logout), onPressed: () => _authService.logout().then((_) => Navigator.pushReplacementNamed(context, AppRoutes.login))),
+          IconButton(
+              icon: const Icon(Icons.logout),
+              onPressed: () => _authService.logout().then((_) =>
+                  Navigator.pushReplacementNamed(context, AppRoutes.login))),
         ],
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
               onRefresh: _loadCompanyJobs,
-              child: _myJobs.isEmpty ? _buildEmptyState() : ListView.builder(
-                itemCount: _myJobs.length,
-                itemBuilder: (context, index) => _buildCompanyJobCard(_myJobs[index]),
-              ),
+              child: _myJobs.isEmpty
+                  ? _buildEmptyState()
+                  : ListView.builder(
+                      itemCount: _myJobs.length,
+                      itemBuilder: (context, index) =>
+                          _buildCompanyJobCard(_myJobs[index]),
+                    ),
             ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => Navigator.pushNamed(context, AppRoutes.createJob).then((_) => _loadCompanyJobs()),
+        onPressed: () => Navigator.pushNamed(context, AppRoutes.createJob)
+            .then((_) => _loadCompanyJobs()),
         label: const Text('Nova Vaga'),
         icon: const Icon(Icons.add),
         backgroundColor: Colors.blue.shade900,
@@ -181,20 +213,29 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: ExpansionTile(
-        title: Text(job['titulo'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+        title: Text(job['titulo'] ?? '',
+            style: const TextStyle(fontWeight: FontWeight.bold)),
         subtitle: Text('R\$ ${job['valor']} - ${ocupadas}/${totais} Vagas'),
         children: [
           Padding(
             padding: const EdgeInsets.all(16.0),
             child: Column(
               children: [
-                LinearProgressIndicator(value: ocupadas / totais, backgroundColor: Colors.grey.shade200),
+                LinearProgressIndicator(
+                    value: ocupadas / totais,
+                    backgroundColor: Colors.grey.shade200),
                 const SizedBox(height: 16),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: [
-                    TextButton.icon(onPressed: () => _verInscritos(job['id']), icon: const Icon(Icons.people), label: const Text('VER INSCRITOS')),
-                    IconButton(onPressed: () => _excluirVagaCompleta(job['id']), icon: const Icon(Icons.delete_forever, color: Colors.red)),
+                    TextButton.icon(
+                        onPressed: () => _verInscritos(job['id']),
+                        icon: const Icon(Icons.people),
+                        label: const Text('VER INSCRITOS')),
+                    IconButton(
+                        onPressed: () => _excluirVagaCompleta(job['id']),
+                        icon: const Icon(Icons.delete_forever,
+                            color: Colors.red)),
                   ],
                 ),
               ],
