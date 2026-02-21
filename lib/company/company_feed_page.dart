@@ -52,45 +52,73 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
   }
 
   Future<void> _excluirVagaCompleta(String jobId) async {
-    final confirmar = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Excluir Vaga?'),
-        content: const Text(
-            'Isso removerá a vaga e todos os inscritos nela. Esta ação não pode ser desfeita.'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('CANCELAR')),
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child:
-                  const Text('EXCLUIR', style: TextStyle(color: Colors.red))),
-        ],
-      ),
-    );
+    try {
+      // PASSO 1: Verificar checkins
+      final checkins = await _supabase
+          .from('checkins')
+          .select('id, status')
+          .eq('job_id', jobId);
 
-    if (confirmar == true) {
-      try {
+      debugPrint('📊 Checkins encontrados: ${checkins.length}');
+
+      // Mensagem personalizada
+      String mensagem = 'Isso removerá a vaga e todos os inscritos nela.';
+      if (checkins.isNotEmpty) {
+        mensagem =
+            'ATENÇÃO: Esta vaga tem ${checkins.length} checkin(s) confirmado(s)!\n\n'
+            'Ao excluir a vaga, TODOS os checkins serão removidos permanentemente.';
+      }
+
+      final confirmar = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Excluir Vaga?'),
+          content: Text(mensagem),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('CANCELAR')),
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('EXCLUIR TUDO',
+                    style: TextStyle(color: Colors.red))),
+          ],
+        ),
+      );
+
+      if (confirmar == true) {
         setState(() => _isLoading = true);
 
-        debugPrint('1. Excluindo candidaturas da vaga: $jobId');
-        // Excluir candidaturas
+        // 🔴 ORDEM CORRETA DE EXCLUSÃO:
+
+        // 1º - Excluir CHECKINS (tabela filha)
+        if (checkins.isNotEmpty) {
+          debugPrint('1️⃣ Excluindo ${checkins.length} checkins...');
+          await _supabase.from('checkins').delete().eq('job_id', jobId);
+          debugPrint('   ✅ Checkins excluídos');
+        }
+
+        // 2º - Excluir CANDIDATURAS (tabela filha)
+        debugPrint('2️⃣ Excluindo candidaturas...');
         await _supabase.from('job_applications').delete().eq('job_id', jobId);
 
-        debugPrint('2. Excluindo vaga: $jobId');
-        // Excluir vaga
+        // 3º - Excluir VAGA (tabela pai)
+        debugPrint('3️⃣ Excluindo vaga...');
         await _supabase.from('jobs').delete().eq('id', jobId);
 
-        debugPrint('3. Removendo da lista local');
-        // Remover da lista local
         if (mounted) {
           setState(() {
             _myJobs.removeWhere((job) => job['id'] == jobId);
             _isLoading = false;
           });
 
+          String msg = 'Vaga excluída com sucesso!';
+          if (checkins.isNotEmpty) {
+            msg = 'Vaga e ${checkins.length} checkin(s) excluídos!';
+          }
+
           ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(msg), backgroundColor: Colors.green),
             const SnackBar(content: Text('Vaga excluída com sucesso!')),
           );
         }
@@ -100,8 +128,18 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Erro ao excluir vaga: $e')),
           );
-          setState(() => _isLoading = false);
         }
+      }
+    } catch (e) {
+      debugPrint('❌ Erro detalhado: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erro ao excluir: ${e.toString()}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        setState(() => _isLoading = false);
       }
     }
   }
@@ -131,10 +169,6 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
                       return const Center(child: CircularProgressIndicator());
                     }
 
-                    if (snapshot.hasError) {
-                      return Center(child: Text('Erro: ${snapshot.error}'));
-                    }
-
                     final inscritos = snapshot.data ?? [];
 
                     if (inscritos.isEmpty) {
@@ -146,27 +180,76 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
                       itemCount: inscritos.length,
                       itemBuilder: (context, index) {
                         final inscrito = inscritos[index];
-                        final nome = inscrito['nome'] ?? 'Desconhecido';
-                        final rank = inscrito['rank'] ?? 'Bronze';
-                        final applicationId = inscrito['application_id'];
 
                         return ListTile(
                           leading: CircleAvatar(
-                            child: Text(
-                                nome.isNotEmpty ? nome[0].toUpperCase() : '?'),
+                            child: Text(inscrito['nome'][0].toUpperCase()),
                           ),
-                          title: Text(nome),
-                          subtitle: Text('Rank: $rank'),
+                          title: Text(inscrito['nome']),
+                          subtitle: Text('Rank: ${inscrito['rank']}'),
                           trailing: IconButton(
                             icon: const Icon(Icons.person_remove,
                                 color: Colors.red),
                             onPressed: () async {
-                              await _supabase
-                                  .from('job_applications')
-                                  .delete()
-                                  .eq('id', applicationId);
-                              Navigator.pop(context);
-                              _loadCompanyJobs();
+                              try {
+                                // 1º - Buscar valor atual de vagas_ocupadas
+                                final job = await _supabase
+                                    .from('jobs')
+                                    .select('vagas_ocupadas, vagas_totais')
+                                    .eq('id', jobId)
+                                    .single();
+
+                                // 2º - Calcular novo valor (nunca abaixo de 0)
+                                int novoValor = job['vagas_ocupadas'] - 1;
+                                if (novoValor < 0) {
+                                  novoValor = 0; // 🔴 IMPEDE VALOR NEGATIVO
+                                  debugPrint(
+                                      '⚠️ Tentativa de valor negativo - ajustado para 0');
+                                }
+
+                                // 3º - Atualizar a vaga com o novo valor
+                                await _supabase
+                                    .from('jobs')
+                                    .update({'vagas_ocupadas': novoValor}).eq(
+                                        'id', jobId);
+
+                                // 4º - Excluir a candidatura
+                                await _supabase
+                                    .from('job_applications')
+                                    .delete()
+                                    .eq('id', inscrito['application_id']);
+
+                                // 5º - Fechar modal e recarregar
+                                Navigator.pop(context);
+                                await _loadCompanyJobs();
+
+                                // 6º - Mensagem de sucesso (com aviso se necessário)
+                                String mensagem =
+                                    'Colaborador removido da vaga';
+                                if (job['vagas_ocupadas'] < 0) {
+                                  mensagem =
+                                      'Colaborador removido (valor negativo corrigido)';
+                                }
+
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(mensagem),
+                                      backgroundColor: Colors.green,
+                                    ),
+                                  );
+                                }
+                              } catch (e) {
+                                debugPrint('❌ Erro ao remover colaborador: $e');
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text('Erro ao remover: $e'),
+                                      backgroundColor: Colors.red,
+                                    ),
+                                  );
+                                }
+                              }
                             },
                           ),
                         );
@@ -184,31 +267,20 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
 
   Future<List<Map<String, dynamic>>> _buscarInscritosCompleto(
       String jobId) async {
-    debugPrint('🔍 Buscando inscritos para jobId: $jobId');
-
     try {
       final applications = await _supabase
           .from('job_applications')
           .select('id, worker_id')
           .eq('job_id', jobId);
 
-      debugPrint('📊 Applications: $applications');
-
-      if (applications.isEmpty) return [];
-
       List<Map<String, dynamic>> inscritos = [];
 
       for (var app in applications) {
-        final workerId = app['worker_id'];
-        debugPrint('👤 Buscando users com id: $workerId');
-
         final userData = await _supabase
             .from('users')
             .select('nome, rank')
-            .eq('id', workerId)
+            .eq('id', app['worker_id'])
             .maybeSingle();
-
-        debugPrint('👤 userData: $userData');
 
         inscritos.add({
           'application_id': app['id'],
@@ -217,10 +289,9 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
         });
       }
 
-      debugPrint('✅ Inscritos: $inscritos');
       return inscritos;
     } catch (e) {
-      debugPrint('❌ Erro: $e');
+      debugPrint('Erro ao buscar inscritos: $e');
       return [];
     }
   }
