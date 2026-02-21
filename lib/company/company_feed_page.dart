@@ -45,7 +45,7 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
       }
     } catch (e) {
       debugPrint('Erro: $e');
-      if (mounted) setState(() => _isLoading = false);//
+      if (mounted) setState(() => _isLoading = false); //
     } //finally {
     //if (mounted) setState(() => _isLoading = false);
     //}
@@ -74,13 +74,16 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
       try {
         setState(() => _isLoading = true);
 
+        debugPrint('1. Excluindo candidaturas da vaga: $jobId');
         // Excluir candidaturas
         await _supabase.from('job_applications').delete().eq('job_id', jobId);
 
+        debugPrint('2. Excluindo vaga: $jobId');
         // Excluir vaga
         await _supabase.from('jobs').delete().eq('id', jobId);
 
-        // ✅ REMOVER DIRETAMENTE DA LISTA (mais garantido)
+        debugPrint('3. Removendo da lista local');
+        // Remover da lista local
         if (mounted) {
           setState(() {
             _myJobs.removeWhere((job) => job['id'] == jobId);
@@ -92,7 +95,7 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
           );
         }
       } catch (e) {
-        debugPrint('Erro ao excluir: $e');
+        debugPrint('❌ ERRO: $e');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Erro ao excluir vaga: $e')),
@@ -121,32 +124,39 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
               const Divider(),
               Expanded(
                 child: FutureBuilder(
-                  // O .select('..., users(*)') é o que resolve o "Desconhecido"
-                  future: _supabase
-                      .from('job_applications')
-                      .select('id, users(*)')
-                      .eq('job_id', jobId),
-                  builder: (context, AsyncSnapshot snapshot) {
-                    if (!snapshot.hasData)
+                  future: _buscarInscritosCompleto(jobId),
+                  builder: (context,
+                      AsyncSnapshot<List<Map<String, dynamic>>> snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
                       return const Center(child: CircularProgressIndicator());
-                    final data = snapshot.data as List;
-                    if (data.isEmpty)
+                    }
+
+                    if (snapshot.hasError) {
+                      return Center(child: Text('Erro: ${snapshot.error}'));
+                    }
+
+                    final inscritos = snapshot.data ?? [];
+
+                    if (inscritos.isEmpty) {
                       return const Center(child: Text('Nenhum inscrito.'));
+                    }
 
                     return ListView.builder(
                       controller: controller,
-                      itemCount: data.length,
+                      itemCount: inscritos.length,
                       itemBuilder: (context, index) {
-                        final application = data[index];
-                        final worker = application['users'];
-                        final nome = worker?['nome'] ?? 'Desconhecido';
+                        final inscrito = inscritos[index];
+                        final nome = inscrito['nome'] ?? 'Desconhecido';
+                        final rank = inscrito['rank'] ?? 'Bronze';
+                        final applicationId = inscrito['application_id'];
 
                         return ListTile(
-                          leading:
-                              CircleAvatar(child: Text(nome[0].toUpperCase())),
+                          leading: CircleAvatar(
+                            child: Text(
+                                nome.isNotEmpty ? nome[0].toUpperCase() : '?'),
+                          ),
                           title: Text(nome),
-                          subtitle:
-                              Text('Rank: ${worker?['rank'] ?? 'Bronze'}'),
+                          subtitle: Text('Rank: $rank'),
                           trailing: IconButton(
                             icon: const Icon(Icons.person_remove,
                                 color: Colors.red),
@@ -154,9 +164,9 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
                               await _supabase
                                   .from('job_applications')
                                   .delete()
-                                  .eq('id', application['id']);
-                              Navigator.pop(context); // Fecha modal
-                              _loadCompanyJobs(); // Atualiza contador 0/x
+                                  .eq('id', applicationId);
+                              Navigator.pop(context);
+                              _loadCompanyJobs();
                             },
                           ),
                         );
@@ -170,6 +180,49 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
         ),
       ),
     );
+  }
+
+  Future<List<Map<String, dynamic>>> _buscarInscritosCompleto(
+      String jobId) async {
+    debugPrint('🔍 Buscando inscritos para jobId: $jobId');
+
+    try {
+      final applications = await _supabase
+          .from('job_applications')
+          .select('id, worker_id')
+          .eq('job_id', jobId);
+
+      debugPrint('📊 Applications: $applications');
+
+      if (applications.isEmpty) return [];
+
+      List<Map<String, dynamic>> inscritos = [];
+
+      for (var app in applications) {
+        final workerId = app['worker_id'];
+        debugPrint('👤 Buscando users com id: $workerId');
+
+        final userData = await _supabase
+            .from('users')
+            .select('nome, rank')
+            .eq('id', workerId)
+            .maybeSingle();
+
+        debugPrint('👤 userData: $userData');
+
+        inscritos.add({
+          'application_id': app['id'],
+          'nome': userData?['nome'] ?? 'Desconhecido',
+          'rank': userData?['rank'] ?? 'Bronze',
+        });
+      }
+
+      debugPrint('✅ Inscritos: $inscritos');
+      return inscritos;
+    } catch (e) {
+      debugPrint('❌ Erro: $e');
+      return [];
+    }
   }
 
   @override
