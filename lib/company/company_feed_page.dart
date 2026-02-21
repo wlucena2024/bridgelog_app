@@ -45,7 +45,7 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
       }
     } catch (e) {
       debugPrint('Erro: $e');
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);//
     } //finally {
     //if (mounted) setState(() => _isLoading = false);
     //}
