@@ -119,6 +119,14 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
 
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text(msg), backgroundColor: Colors.green),
+            const SnackBar(content: Text('Vaga excluída com sucesso!')),
+          );
+        }
+      } catch (e) {
+        debugPrint('❌ ERRO: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Erro ao excluir vaga: $e')),
           );
         }
       }
