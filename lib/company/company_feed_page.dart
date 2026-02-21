@@ -45,60 +45,93 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
       }
     } catch (e) {
       debugPrint('Erro: $e');
-      if (mounted) setState(() => _isLoading = false);//
+      if (mounted) setState(() => _isLoading = false); //
     } //finally {
     //if (mounted) setState(() => _isLoading = false);
     //}
   }
 
   Future<void> _excluirVagaCompleta(String jobId) async {
-    final confirmar = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Excluir Vaga?'),
-        content: const Text(
-            'Isso removerá a vaga e todos os inscritos nela. Esta ação não pode ser desfeita.'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('CANCELAR')),
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child:
-                  const Text('EXCLUIR', style: TextStyle(color: Colors.red))),
-        ],
-      ),
-    );
+    try {
+      // PASSO 1: Verificar checkins
+      final checkins = await _supabase
+          .from('checkins')
+          .select('id, status')
+          .eq('job_id', jobId);
 
-    if (confirmar == true) {
-      try {
+      debugPrint('📊 Checkins encontrados: ${checkins.length}');
+
+      // Mensagem personalizada
+      String mensagem = 'Isso removerá a vaga e todos os inscritos nela.';
+      if (checkins.isNotEmpty) {
+        mensagem =
+            'ATENÇÃO: Esta vaga tem ${checkins.length} checkin(s) confirmado(s)!\n\n'
+            'Ao excluir a vaga, TODOS os checkins serão removidos permanentemente.';
+      }
+
+      final confirmar = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Excluir Vaga?'),
+          content: Text(mensagem),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('CANCELAR')),
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('EXCLUIR TUDO',
+                    style: TextStyle(color: Colors.red))),
+          ],
+        ),
+      );
+
+      if (confirmar == true) {
         setState(() => _isLoading = true);
 
-        // Excluir candidaturas
+        // 🔴 ORDEM CORRETA DE EXCLUSÃO:
+
+        // 1º - Excluir CHECKINS (tabela filha)
+        if (checkins.isNotEmpty) {
+          debugPrint('1️⃣ Excluindo ${checkins.length} checkins...');
+          await _supabase.from('checkins').delete().eq('job_id', jobId);
+          debugPrint('   ✅ Checkins excluídos');
+        }
+
+        // 2º - Excluir CANDIDATURAS (tabela filha)
+        debugPrint('2️⃣ Excluindo candidaturas...');
         await _supabase.from('job_applications').delete().eq('job_id', jobId);
 
-        // Excluir vaga
+        // 3º - Excluir VAGA (tabela pai)
+        debugPrint('3️⃣ Excluindo vaga...');
         await _supabase.from('jobs').delete().eq('id', jobId);
 
-        // ✅ REMOVER DIRETAMENTE DA LISTA (mais garantido)
         if (mounted) {
           setState(() {
             _myJobs.removeWhere((job) => job['id'] == jobId);
             _isLoading = false;
           });
 
+          String msg = 'Vaga excluída com sucesso!';
+          if (checkins.isNotEmpty) {
+            msg = 'Vaga e ${checkins.length} checkin(s) excluídos!';
+          }
+
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Vaga excluída com sucesso!')),
+            SnackBar(content: Text(msg), backgroundColor: Colors.green),
           );
         }
-      } catch (e) {
-        debugPrint('Erro ao excluir: $e');
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Erro ao excluir vaga: $e')),
-          );
-          setState(() => _isLoading = false);
-        }
+      }
+    } catch (e) {
+      debugPrint('❌ Erro detalhado: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erro ao excluir: ${e.toString()}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        setState(() => _isLoading = false);
       }
     }
   }
@@ -121,42 +154,94 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
               const Divider(),
               Expanded(
                 child: FutureBuilder(
-                  // O .select('..., users(*)') é o que resolve o "Desconhecido"
-                  future: _supabase
-                      .from('job_applications')
-                      .select('id, users(*)')
-                      .eq('job_id', jobId),
-                  builder: (context, AsyncSnapshot snapshot) {
-                    if (!snapshot.hasData)
+                  future: _buscarInscritosCompleto(jobId),
+                  builder: (context,
+                      AsyncSnapshot<List<Map<String, dynamic>>> snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
                       return const Center(child: CircularProgressIndicator());
-                    final data = snapshot.data as List;
-                    if (data.isEmpty)
+                    }
+
+                    final inscritos = snapshot.data ?? [];
+
+                    if (inscritos.isEmpty) {
                       return const Center(child: Text('Nenhum inscrito.'));
+                    }
 
                     return ListView.builder(
                       controller: controller,
-                      itemCount: data.length,
+                      itemCount: inscritos.length,
                       itemBuilder: (context, index) {
-                        final application = data[index];
-                        final worker = application['users'];
-                        final nome = worker?['nome'] ?? 'Desconhecido';
+                        final inscrito = inscritos[index];
 
                         return ListTile(
-                          leading:
-                              CircleAvatar(child: Text(nome[0].toUpperCase())),
-                          title: Text(nome),
-                          subtitle:
-                              Text('Rank: ${worker?['rank'] ?? 'Bronze'}'),
+                          leading: CircleAvatar(
+                            child: Text(inscrito['nome'][0].toUpperCase()),
+                          ),
+                          title: Text(inscrito['nome']),
+                          subtitle: Text('Rank: ${inscrito['rank']}'),
                           trailing: IconButton(
                             icon: const Icon(Icons.person_remove,
                                 color: Colors.red),
                             onPressed: () async {
-                              await _supabase
-                                  .from('job_applications')
-                                  .delete()
-                                  .eq('id', application['id']);
-                              Navigator.pop(context); // Fecha modal
-                              _loadCompanyJobs(); // Atualiza contador 0/x
+                              try {
+                                // 1º - Buscar valor atual de vagas_ocupadas
+                                final job = await _supabase
+                                    .from('jobs')
+                                    .select('vagas_ocupadas, vagas_totais')
+                                    .eq('id', jobId)
+                                    .single();
+
+                                // 2º - Calcular novo valor (nunca abaixo de 0)
+                                int novoValor = job['vagas_ocupadas'] - 1;
+                                if (novoValor < 0) {
+                                  novoValor = 0; // 🔴 IMPEDE VALOR NEGATIVO
+                                  debugPrint(
+                                      '⚠️ Tentativa de valor negativo - ajustado para 0');
+                                }
+
+                                // 3º - Atualizar a vaga com o novo valor
+                                await _supabase
+                                    .from('jobs')
+                                    .update({'vagas_ocupadas': novoValor}).eq(
+                                        'id', jobId);
+
+                                // 4º - Excluir a candidatura
+                                await _supabase
+                                    .from('job_applications')
+                                    .delete()
+                                    .eq('id', inscrito['application_id']);
+
+                                // 5º - Fechar modal e recarregar
+                                Navigator.pop(context);
+                                await _loadCompanyJobs();
+
+                                // 6º - Mensagem de sucesso (com aviso se necessário)
+                                String mensagem =
+                                    'Colaborador removido da vaga';
+                                if (job['vagas_ocupadas'] < 0) {
+                                  mensagem =
+                                      'Colaborador removido (valor negativo corrigido)';
+                                }
+
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(mensagem),
+                                      backgroundColor: Colors.green,
+                                    ),
+                                  );
+                                }
+                              } catch (e) {
+                                debugPrint('❌ Erro ao remover colaborador: $e');
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text('Erro ao remover: $e'),
+                                      backgroundColor: Colors.red,
+                                    ),
+                                  );
+                                }
+                              }
                             },
                           ),
                         );
@@ -170,6 +255,37 @@ class _CompanyFeedPageState extends State<CompanyFeedPage> {
         ),
       ),
     );
+  }
+
+  Future<List<Map<String, dynamic>>> _buscarInscritosCompleto(
+      String jobId) async {
+    try {
+      final applications = await _supabase
+          .from('job_applications')
+          .select('id, worker_id')
+          .eq('job_id', jobId);
+
+      List<Map<String, dynamic>> inscritos = [];
+
+      for (var app in applications) {
+        final userData = await _supabase
+            .from('users')
+            .select('nome, rank')
+            .eq('id', app['worker_id'])
+            .maybeSingle();
+
+        inscritos.add({
+          'application_id': app['id'],
+          'nome': userData?['nome'] ?? 'Desconhecido',
+          'rank': userData?['rank'] ?? 'Bronze',
+        });
+      }
+
+      return inscritos;
+    } catch (e) {
+      debugPrint('Erro ao buscar inscritos: $e');
+      return [];
+    }
   }
 
   @override
